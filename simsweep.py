@@ -20,10 +20,7 @@ Long Term (keep list for thesis)
 *   Obvious easy change: cap binary search with LSTM bad guess
 *   No time dependance
 """
-#%% Imports and Fcns
-#imports
 import numpy as np
-import matplotlib.pyplot as plt
 from numpy.linalg import norm
 import h5py
 import itertools
@@ -31,8 +28,9 @@ import os
 
 from scipy.signal import cont2discrete
 from scipy.linalg import solve_discrete_are
-from globals import mu, indexInterp, ECI2RIC, ECIprop, rainbow_plot
+from globals import mu, indexInterp, ECI2RIC, ECIprop
 from globals import gravity_gradient 
+import time
 
 a_target = 7000 #km
 n=np.sqrt(mu/a_target**3)
@@ -59,8 +57,8 @@ n=3
 stepsPerOrbit = int(T_target//step)
 
 
-if os.path.exists("precompute.npz"):
-    with open("precompute.npz","rb") as f:
+if os.path.exists("localsaves/precompute.npz"):
+    with open("localsaves/precompute.npz","rb") as f:
         zvars = np.load(f)
         if zvars["a_target"] != a_target or zvars["step"] != step:
             raise ValueError('step size and a_target must match current script. a_target:'+
@@ -90,125 +88,33 @@ else:
         tx,tv = ECIprop(tx, tv, step)
     print("-", end="")
     if "thesis" in os.getcwd() or "Thesis" in os.getcwd():
-        np.savez("precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
+        np.savez("localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
 
-#%% Single Run with plotting and bifrication only
-#----------------------------------------------
-
-initAngle = .15 #neg in track
-amultchaser = 1.001 #SMA ratio chaser/target
-zoffset = 0
-orbits = .025
-total_sim_orbits = 0
-
-cx0 = np.array([amultchaser*a_target*np.cos(-initAngle),amultchaser*a_target*np.sin(-initAngle),zoffset])
-cv0mag = np.sqrt(mu/norm(cx0))
-cv0 = np.array([-cv0mag*np.sin(-initAngle),cv0mag*np.cos(-initAngle),0])
-unext = np.zeros((3,1)) #First Timestep, just use zero accel
-
-initdists = norm(t_hist[0:stepsPerOrbit,0,:]-cx0,axis=1)
-tback0 = stepsPerOrbit - np.argmin(initdists) + 1
-
-#Initialize states for this run
-tx=t_hist[stepsPerOrbit,0,:]
-tv=t_hist[stepsPerOrbit,1,:]
-cx=cx0.copy()
-cv=cv0.copy()
-tback=tback0
-
-steps = int(orbits*T_target)//step
-#At time 0, tx is at t_hist[stepsperorbit]
-if np.size(t_hist,axis=0) < (2*stepsPerOrbit)+steps:
-    raise ValueError("Need longer precompute")
-
-#Initialize lists for plotting
-c_hist = np.zeros((steps,2,3)) # Shape (n, 2, 3)
-c_hist_ric = np.zeros((steps,2,3))
-tenergyhist = np.zeros((steps,1)) # Shape (n,)
-umaghist = np.zeros((steps,1)) # Shape (n,)
-coneconsthist = np.zeros((steps,1)) # Shape (n,)
-speedconsthist = np.zeros((steps,1)) # Shape (n,)
-tbackhist = np.zeros((steps,1)) # Shape (n,)
-#print("-"*(1+(steps//10)))
-for i in range(steps):
-  ######### Logging ###########
-    c_hist[i,0,:] = cx
-    #c_hist[i,1,:] = cv
-    Tmat = ECI2RIC(tx, tv)
-    c_hist_ric[i,0,:] = Tmat @ (cx-tx)
-    c_hist_ric[i,1,:] = Tmat @ (cv-tv)
-    #tenergyhist[i] = 0.5*norm(tv)**2 - (mu/norm(tx))
-    umaghist[i] = norm(unext)
-    coneconsthist[i] = -1*(( -tv.T @ (cx-tx)/norm(cx-tx)) / (norm(tv))) + np.cos(conehalfangle) if norm(cx-tx)>1e-3 else 0
-    speedconsthist[i] = norm(cv-tv) - (g2*norm(cx-tx)) - g3 if norm(cx-tx) <= g1 and norm(cx-tx)>1e-3 else 0
-    tbackhist[i] = tback
-  ######### Control Calc ###########
-    mint = 0.0001 #s
-    maxt = tback #from last propagation
-    if tback > 2:
-        thresh = .5
-    elif tback < 2:
-        thresh = .01
-    elif tback < .5:
-        thresh = 0
-        maxt = 0
-    while maxt - mint > thresh:
-        test = (maxt+mint)/2
-        txsim = tx.copy()
-        tvsim = tv.copy()
-        cxsim = cx.copy()
-        cvsim = cv.copy()
-        total_sim_orbits += 1
-        for j in range(i,i+stepsPerOrbit):
-            speedconst = norm(cvsim-tvsim) - (g2*norm(cxsim-txsim)) - g3 if norm(cxsim-txsim) <= g1  and norm(cxsim-txsim)>1e-3 else 0
-            normedpos = (cxsim-txsim)/norm(cxsim-txsim)
-            coneconst = -1*(( -tvsim.T @ normedpos) / (norm(tvsim))) + np.cos(conehalfangle) if norm(cxsim-txsim)>1e-3 else 0
-            if speedconst > 0 or coneconst > 0:
-                if j==i:
-                    raise ValueError("Error, const already broken shouldnt be possible")
-                break
-            tsgIndex = stepsPerOrbit + j - test
-            Kt = indexInterp(K, tsgIndex, 0)
-            tstate = indexInterp(t_hist, tsgIndex, 0);
-            unext = -Kt@np.hstack([cxsim-tstate[0,:], cvsim-tstate[1,:]])
-            if norm(unext)>.5:
-                unext = unext * (.5/norm(unext))
-            txsim = t_hist[stepsPerOrbit+j+1,0,:]
-            tvsim = t_hist[stepsPerOrbit+j+1,1,:]
-            cxsim,cvsim = ECIprop(cxsim, cvsim, step, accel=unext)
-        if j == i + stepsPerOrbit - 1:
-            maxt = test #consts met
-        else:
-            mint = test
-    tback = maxt
-    tsgIndex = stepsPerOrbit + i - tback
-    Kt = indexInterp(K, tsgIndex, 0)
-    tstate = indexInterp(t_hist, tsgIndex, 0);
-    unext = -Kt@np.hstack([cx-tstate[0,:], cv-tstate[1,:]])
-    if norm(unext)>.5:
-        unext = unext * (.5/norm(unext))
-
-
-   ######### Propagation ###########
-    tx = t_hist[stepsPerOrbit+i+1,0,:]
-    tv = t_hist[stepsPerOrbit+i+1,1,:]
-    cx,cv = ECIprop(cx, cv, step, accel=unext)
-print("Total Simulated Orbits = ", total_sim_orbits)
-fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
-ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
-rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])
-rainbow_plot(ax2, c_hist_ric[:, 0, 0], c_hist_ric[:, 0, 1])
-#rainbow_plot(ax3, range(steps), norm(c_hist_ric[:, 0, :], axis=1))
-#ax3.text(len(c_hist_ric)-75,  norm(c_hist_ric[-1, 0, :])+50, "Final Norm="+str(int(norm(c_hist_ric[-1, 0, :])*10)/10))
-rainbow_plot(ax3, umaghist)
-rainbow_plot(ax4, range(steps), coneconsthist)
-ax4.text(float(steps*.2),  min(coneconsthist)+.2*(max(coneconsthist)-min(coneconsthist)), "max const="+str(int(max(coneconsthist)*1000)/1000))
-#To be used when its actually getting close enough lol
-rainbow_plot(ax5, range(steps), speedconsthist)
-ax5.text(steps*.2,  min(speedconsthist)+.2*(max(speedconsthist)-min(speedconsthist)), "max const="+str(int(max(speedconsthist)*1000)/1000))
-rainbow_plot(ax6, tbackhist)
-plt.show()
-#%% Data file gen
+def OneOrbitNoLog(i0, cx0, cv0, testTback):
+    cxsim = cx0.copy()
+    cvsim = cv0.copy()
+    txsim = t_hist[stepsPerOrbit+i0,0,:]
+    tvsim = t_hist[stepsPerOrbit+i0,1,:]
+    success = True
+    for j in range(i0,i0+stepsPerOrbit):
+        speedconst = norm(cvsim-tvsim) - (g2*norm(cxsim-txsim)) - g3 if norm(cxsim-txsim) <= g1  and norm(cxsim-txsim)>1e-3 else 0
+        normedpos = (cxsim-txsim)/norm(cxsim-txsim)
+        coneconst = -1*(( -tvsim.T @ normedpos) / (norm(tvsim))) + np.cos(conehalfangle) if norm(cxsim-txsim)>1e-3 else 0
+        if speedconst > 0 or coneconst > 0:
+            if j==i:
+                raise ValueError("Error, const already broken shouldnt be possible")
+            success = False
+            break
+        tsgIndex = stepsPerOrbit + j - testTback
+        Kt = indexInterp(K, tsgIndex, 0)
+        tstate = indexInterp(t_hist, tsgIndex, 0);
+        unext = -Kt@np.hstack([cxsim-tstate[0,:], cvsim-tstate[1,:]])
+        if norm(unext)>.5:
+            unext = unext * (.5/norm(unext))
+        txsim = t_hist[stepsPerOrbit+j+1,0,:]
+        tvsim = t_hist[stepsPerOrbit+j+1,1,:]
+        cxsim,cvsim = ECIprop(cxsim, cvsim, step, accel=unext)
+    return success
 
 initAngles = np.linspace(0.1, 0.3, 10)
 amultchasers = np.linspace(0.997, 1.003, 10)
@@ -216,7 +122,7 @@ zoffsets = np.linspace(-5, 5, 5)
 initvars = list(itertools.product(initAngles, amultchasers, zoffsets))
 orbits = .05
 
-filepath = 'big2.h5'
+filepath = time.strftime('gridsweep_%b%d_%H%M.pth')
 with h5py.File(filepath, 'w') as h5file:
     for scenario_num, (initAngle, amultchaser, zoffset) in enumerate(initvars):
       print(scenario_num,"/",len(initvars))
@@ -268,32 +174,14 @@ with h5py.File(filepath, 'w') as h5file:
               thresh = 0
               maxt = 0
           while maxt - mint > thresh:
-              test = (maxt+mint)/2
+              testTback = (maxt+mint)/2
               txsim = tx.copy()
               tvsim = tv.copy()
-              cxsim = cx.copy()
-              cvsim = cv.copy()
-              for j in range(i,i+stepsPerOrbit):
-                  speedconst = norm(cvsim-tvsim) - (g2*norm(cxsim-txsim)) - g3 if norm(cxsim-txsim) <= g1  and norm(cxsim-txsim)>1e-3 else 0
-                  normedpos = (cxsim-txsim)/norm(cxsim-txsim)
-                  coneconst = -1*(( -tvsim.T @ normedpos) / (norm(tvsim))) + np.cos(conehalfangle) if norm(cxsim-txsim)>1e-3 else 0
-                  if speedconst > 0 or coneconst > 0:
-                      if j==i:
-                          raise ValueError("Error, const already broken shouldnt be possible")
-                      break
-                  tsgIndex = stepsPerOrbit + j - test
-                  Kt = indexInterp(K, tsgIndex, 0)
-                  tstate = indexInterp(t_hist, tsgIndex, 0);
-                  unext = -Kt@np.hstack([cxsim-tstate[0,:], cvsim-tstate[1,:]])
-                  if norm(unext)>.5:
-                      unext = unext * (.5/norm(unext))
-                  txsim = t_hist[stepsPerOrbit+j+1,0,:]
-                  tvsim = t_hist[stepsPerOrbit+j+1,1,:]
-                  cxsim,cvsim = ECIprop(cxsim, cvsim, step, accel=unext)
-              if j == i + stepsPerOrbit - 1:
-                  maxt = test #consts met
+              success = OneOrbitNoLog(i, cx, cv, testTback)
+              if success:
+                  maxt = testTback #consts met
               else:
-                  mint = test
+                  mint = testTback
           tback = maxt
           tsgIndex = stepsPerOrbit + i - tback
           Kt = indexInterp(K, tsgIndex, 0)
@@ -319,16 +207,13 @@ with h5py.File(filepath, 'w') as h5file:
       grp.attrs['amultchaser'] = amultchaser
       grp.attrs['zoffset'] = zoffset
       grp.attrs['tback0'] = float(tback0)
-#%% tback norm calcs
+#%%
 import matplotlib
 matplotlib.use('tkAgg')
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data import random_split
 import h5py
-import matplotlib.pyplot as plt
 torch.manual_seed(1)
 
 class NormDataset(Dataset):
@@ -357,7 +242,7 @@ class NormDataset(Dataset):
         return state_local, state_abs, tback
 
 
-dataset = NormDataset('./big2.h5')
+dataset = NormDataset(filepath)
 loader  = DataLoader(dataset, batch_size=1, shuffle=False)
 
 tback_min, tback_max = float('inf'), float('-inf')
@@ -376,5 +261,5 @@ for c, (s_loc, s_abs, tback) in enumerate(loader):
 
 torch.save({'tback_min': torch.tensor(tback_min), 'tback_max': torch.tensor(tback_max),
             'state_min_loc': mins['local'], 'state_max_loc': maxs['local'],
-            'state_min_abs': mins['abs'],   'state_max_abs': maxs['abs']}, 'norm.pth')
+            'state_min_abs': mins['abs'],   'state_max_abs': maxs['abs']}, 'normsfor'+filepath[:filepath.find(".")]+'.pth')
 
