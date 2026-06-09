@@ -235,7 +235,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
                             #plt.pause(.05)
                             fig.canvas.flush_events()
         except:
-                if blnPlot:
+            if blnPlot:
                 plt.close()    
                 plt.pause(.1)    
                 plt.switch_backend('module://matplotlib_inline.backend_inline')
