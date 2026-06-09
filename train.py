@@ -147,7 +147,7 @@ hidden_sizes = [2**p for p in range(8,12)]
 num_hidden_layerss = range(3,8)
 
 datapath = "gridsweep.h5"
-
+print("Saving log as: ", time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'))
 with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
     for (hidden_size, num_hidden_layers) in itertools.product(hidden_sizes, num_hidden_layerss):
         printt(hidden_size, num_hidden_layers, withSched, file=f)
