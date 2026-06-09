@@ -141,16 +141,14 @@ batch_size = 2 ** 9
 learning_rate = .0005
 tooLowPenalty = .01
 withSched = True
-nepochs = 30
+nepochs = 5
 
 hidden_sizes = [2**p for p in range(8,12)]
-num_hidden_layerss = range(3,7)
-hidden_sizes = [2**p for p in range(8,9)]
-num_hidden_layerss = range(4,6)
+num_hidden_layerss = range(3,8)
 
 datapath = "gridsweep.h5"
 
-with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
+with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
     for (hidden_size, num_hidden_layers) in itertools.product(hidden_sizes, num_hidden_layerss):
         printt(hidden_size, num_hidden_layers, withSched, file=f)
         # Training
@@ -178,7 +176,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
         
         
         if seqLength == 1:
-            model = FromStateModel(input_size=dims, hidden_size=hidden_size)
+            model = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_hidden_layers)
         else:
             model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_layers=seqLength)
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -189,8 +187,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
         update = False
         model_path = time.strftime('localsaves/model_%b%d_%H%M.pth')
         printt(f"Model Saving as: {model_path}", file=f)
-        printt(f"{len(train_loader)} Batches Per Epoch", file=f)
-        printt(f"{train_loader.batch_size} Samples per Batch", file=f)
+        printt(f"{len(train_loader)} Batches Per Epoch; {train_loader.batch_size} Samples per Batch", file=f)
         try:
             for epoch in range(nepochs):
                 # Training
@@ -220,9 +217,9 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
                         if val_loss < min_val_loss:
                             min_val_loss = val_loss
                             torch.save({'model': model.state_dict(), 'tback_min': tback_min, 'tback_max': tback_max}, model_path)
-                            print(f"Epoch {epoch+1}, Batch {batchidx+1} | Train: {np.sqrt(loss.item()):.4f}, Val: {np.sqrt(val_loss):.4f} | LR: {optimizer.param_groups[0]['lr']:.2e} saved")
+                            print(f"Epoch {epoch+1}, Batch {batchidx+1} | sqrtTrain: {np.sqrt(loss.item()):.4f}, sqrtVal: {np.sqrt(val_loss):.4f} | LR: {optimizer.param_groups[0]['lr']:.2e} saved")
                         else:
-                            print(f"Epoch {epoch+1}, Batch {batchidx+1} | Train: {np.sqrt(loss.item()):.4f}, Val: {np.sqrt(val_loss):.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
+                            print(f"Epoch {epoch+1}, Batch {batchidx+1} | sqrtTrain: {np.sqrt(loss.item()):.4f}, sqrtVal: {np.sqrt(val_loss):.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
                         if blnPlot:
                             train_losses.append(train_loss)
                             val_losses.append(val_loss)
@@ -242,7 +239,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
                 display(fig)
             print(f"Model Saved as: {model_path}")
             sys.exit()
-        printt("Lowest Val Loss: ", min_val_loss)
+        printt("Lowest sqrt of Val Loss: ", np.sqrt(min_val_loss), file=f)
         # Test on holdout set
         printt("\nTesting...", file=f)
         #model.load_state_dict(torch.load(model_path))
@@ -255,12 +252,14 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.pth'), "w") as f:
         with torch.no_grad():
             for state, tback in test_loader:
                 state = (state - state_min) / state_range
+                tback_norm = (tback - tback_min) / (tback_max - tback_min)
                 outputs = model(state)
-                loss = criterion(outputs, tback)
+                loss = criterion(outputs, tback_norm)
                 test_loss += loss.item()
         
         test_loss /= len(test_loader)
         printt(f"Test Loss: {test_loss:.4f}", file=f)
+        printt(f"Model Saved as: {model_path}", file=f)
 
 #%%
 import time
