@@ -147,6 +147,7 @@ initAngle = .15 #neg in track
 amultchaser = 1.001 #SMA ratio chaser/target
 zoffset = 0
 orbits = .025
+total_sim_orbits = 0
 
 cx0 = np.array([amultchaser*a_target*np.cos(-initAngle),amultchaser*a_target*np.sin(-initAngle),zoffset])
 cv0mag = np.sqrt(mu/norm(cx0))
@@ -205,6 +206,7 @@ for i in range(steps):
         tvsim = tv.copy()
         cxsim = cx.copy()
         cvsim = cv.copy()
+        total_sim_orbits += 1
         for j in range(i,i+stepsPerOrbit):
             speedconst = norm(cvsim-tvsim) - (g2*norm(cxsim-txsim)) - g3 if norm(cxsim-txsim) <= g1  and norm(cxsim-txsim)>1e-3 else 0
             normedpos = (cxsim-txsim)/norm(cxsim-txsim)
@@ -239,7 +241,7 @@ for i in range(steps):
     tx = t_hist[stepsPerOrbit+i+1,0,:]
     tv = t_hist[stepsPerOrbit+i+1,1,:]
     cx,cv = ECIprop(cx, cv, step, accel=unext)
-
+print("Total Simulated Orbits = ", total_sim_orbits)
 fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
 ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
 rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])
@@ -424,7 +426,7 @@ torch.save({'tback_min': torch.tensor(tback_min), 'tback_max': torch.tensor(tbac
             'state_min_loc': mins['local'], 'state_max_loc': maxs['local'],
             'state_min_abs': mins['abs'],   'state_max_abs': maxs['abs']}, 'norm.pth')
 
-#%% NN work
+#%% NN Imports and definitions
 import matplotlib
 matplotlib.use('tkAgg')
 import numpy as np
@@ -546,7 +548,7 @@ class NotTooLowLoss(nn.Module):
         loss = error**2
         reluloss = self.relu(-error)**2
         return (loss.sum() + (self.nu * reluloss.sum())) / loss.numel()
-
+#%% NN Training
 blnPlot = False
 if blnPlot:
     plt.ioff()
@@ -558,18 +560,21 @@ if blnPlot:
 #Hyperparameters
 seqLength = 1
 localState = True
-val_size = 2000
+#val_perc = .1
+val_size = 1500
 batch_size = 2 ** 9
 # hidden_size = 2 ** 11
 # num_hidden_layers = 8
 learning_rate = .0005
-nepochs = 5
-hidden_sizes = [2**9, 2**10, 2 ** 11, 2**12]
-num_hidden_layerss = [3, 4, 5, 6, 7]
+hidden_sizes = [2**10, 2 ** 11]
+num_hidden_layerss = [6, 7 ,8, 9]
 tooLowPenalty = .01
-with open("june8sweep3.txt", "w") as f:
+withSched = True
+nepochs = 30
+from contextlib import redirect_stdout
+with open("june4sweep.txt", "w") as f:
     for (hidden_size, num_hidden_layers) in itertools.product(hidden_sizes, num_hidden_layerss):
-        print(hidden_size, num_hidden_layers, file=f)
+        print(hidden_size, num_hidden_layers, withSched, file=f)
         # Training
         if localState:
             dims = 7
@@ -597,7 +602,7 @@ with open("june8sweep3.txt", "w") as f:
         
         
         if seqLength == 1:
-            model = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_hidden_layers)
+            model = FromStateModel(input_size=dims, hidden_size=hidden_size)
         else:
             model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_layers=seqLength)
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -625,7 +630,7 @@ with open("june8sweep3.txt", "w") as f:
                     train_loss = (batchidx/(batchidx+1))*train_loss + (loss.item() / (batchidx+1))
                     
                      # Validate every N batches
-                    if (batchidx + 1) % 3 == 0:
+                    if (batchidx + 1) % 5 == 0:
                         val_loss = 0
                         with torch.no_grad():
                             for state_val, tback_val in val_loader:
@@ -662,6 +667,7 @@ with open("june8sweep3.txt", "w") as f:
             sys.exit()
         # Test on holdout set
         print("\nTesting...", file=f)
+        #model.load_state_dict(torch.load(model_path))
         model.eval()
         
         test_loss = 0
@@ -677,17 +683,32 @@ with open("june8sweep3.txt", "w") as f:
         
         test_loss /= len(test_loader)
         print(f"Test Loss: {test_loss:.4f}", file=f)
-        
-        #Model[\s\S]*?\n(.*saved)[^d]*\n\n.*\n.*\n
-        #$1\n\n
 
 #%%
 import time
 # Load model
-checkpoint = torch.load('model_Jun03_1245.pth', weights_only=False)
-bestmodel = FromStateModel(input_size=dims, hidden_size=hidden_size)
-bestmodel.load_state_dict(checkpoint['model'])
+# dims = 7
+# hidden_size = 1024
+# localState=True
+
+checkpoint = torch.load('model_Jun04_2247.pth', weights_only=False)
+state_dict = checkpoint['model']
+
+# Infer architecture from weights
+input_layer_key = next(k for k in state_dict if 'weight' in k)
+dims = state_dict[input_layer_key].shape[1]
+localState = True if dims == 7 else False
+hidden_size = state_dict[input_layer_key].shape[0]
+num_layers = sum([1 for k in state_dict if k.endswith('.weight') and 'out' not in k])
+
+bestmodel = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_layers)
+bestmodel.load_state_dict(state_dict)
 bestmodel.eval()
+
+# checkpoint = torch.load('model_Jun04_2334.pth', weights_only=False)
+# bestmodel = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_hidden_layers)
+# bestmodel.load_state_dict(checkpoint['model'])
+# bestmodel.eval()
 normFromFile = torch.load('norm.pth', weights_only=True)
 tback_min = normFromFile['tback_min']
 tback_max = normFromFile['tback_max']
@@ -718,3 +739,120 @@ with torch.no_grad():
             print(f"{i+1:6d} | {actual:11.4f} | {predicted:15.4f} | {error:6.4f}")
         
         break  # Just show first batch
+#%% Single Run with model and bifrication
+#----------------------------------------------
+
+initAngle = .15 #neg in track
+amultchaser = 1.001 #SMA ratio chaser/target
+zoffset = 0
+orbits = .025
+total_sim_orbits = 0
+
+cx0 = np.array([amultchaser*a_target*np.cos(-initAngle),amultchaser*a_target*np.sin(-initAngle),zoffset])
+cv0mag = np.sqrt(mu/norm(cx0))
+cv0 = np.array([-cv0mag*np.sin(-initAngle),cv0mag*np.cos(-initAngle),0])
+unext = np.zeros((3,1)) #First Timestep, just use zero accel
+
+initdists = norm(t_hist[0:stepsPerOrbit,0,:]-cx0,axis=1)
+tback0 = stepsPerOrbit - np.argmin(initdists) + 1
+
+#Initialize states for this run
+tx=t_hist[stepsPerOrbit,0,:]
+tv=t_hist[stepsPerOrbit,1,:]
+cx=cx0.copy()
+cv=cv0.copy()
+tback=tback0
+
+steps = int(orbits*T_target)//step
+#At time 0, tx is at t_hist[stepsperorbit]
+if np.size(t_hist,axis=0) < (2*stepsPerOrbit)+steps:
+    raise ValueError("Need longer precompute")
+
+#Initialize lists for plotting
+c_hist = np.zeros((steps,2,3)) # Shape (n, 2, 3)
+c_hist_ric = np.zeros((steps,2,3))
+tenergyhist = np.zeros((steps,1)) # Shape (n,)
+umaghist = np.zeros((steps,1)) # Shape (n,)
+coneconsthist = np.zeros((steps,1)) # Shape (n,)
+speedconsthist = np.zeros((steps,1)) # Shape (n,)
+tbackhist = np.zeros((steps,1)) # Shape (n,)
+#print("-"*(1+(steps//10)))
+for i in range(steps):
+  ######### Logging ###########
+    c_hist[i,0,:] = cx
+    #c_hist[i,1,:] = cv
+    Tmat = ECI2RIC(tx, tv)
+    c_hist_ric[i,0,:] = Tmat @ (cx-tx)
+    c_hist_ric[i,1,:] = Tmat @ (cv-tv)
+    #tenergyhist[i] = 0.5*norm(tv)**2 - (mu/norm(tx))
+    umaghist[i] = norm(unext)
+    coneconsthist[i] = -1*(( -tv.T @ (cx-tx)/norm(cx-tx)) / (norm(tv))) + np.cos(conehalfangle) if norm(cx-tx)>1e-3 else 0
+    speedconsthist[i] = norm(cv-tv) - (g2*norm(cx-tx)) - g3 if norm(cx-tx) <= g1 and norm(cx-tx)>1e-3 else 0
+    tbackhist[i] = tback
+  ######### Control Calc ###########
+    mint = 0.0001 #s
+    maxt = tback #from last propagation
+    if tback > 2:
+        thresh = .5
+    elif tback < 2:
+        thresh = .01
+    elif tback < .5:
+        thresh = 0
+        maxt = 0
+    while maxt - mint > thresh:
+        test = (maxt+mint)/2
+        txsim = tx.copy()
+        tvsim = tv.copy()
+        cxsim = cx.copy()
+        cvsim = cv.copy()
+        total_sim_orbits += 1
+        for j in range(i,i+stepsPerOrbit):
+            speedconst = norm(cvsim-tvsim) - (g2*norm(cxsim-txsim)) - g3 if norm(cxsim-txsim) <= g1  and norm(cxsim-txsim)>1e-3 else 0
+            normedpos = (cxsim-txsim)/norm(cxsim-txsim)
+            coneconst = -1*(( -tvsim.T @ normedpos) / (norm(tvsim))) + np.cos(conehalfangle) if norm(cxsim-txsim)>1e-3 else 0
+            if speedconst > 0 or coneconst > 0:
+                if j==i:
+                    raise ValueError("Error, const already broken shouldnt be possible")
+                break
+            tsgIndex = stepsPerOrbit + j - test
+            Kt = indexInterp(K, tsgIndex, 0)
+            tstate = indexInterp(t_hist, tsgIndex, 0);
+            unext = -Kt@np.hstack([cxsim-tstate[0,:], cvsim-tstate[1,:]])
+            if norm(unext)>.5:
+                unext = unext * (.5/norm(unext))
+            txsim = t_hist[stepsPerOrbit+j+1,0,:]
+            tvsim = t_hist[stepsPerOrbit+j+1,1,:]
+            cxsim,cvsim = ECIprop(cxsim, cvsim, step, accel=unext)
+        if j == i + stepsPerOrbit - 1:
+            maxt = test #consts met
+        else:
+            mint = test
+    tback = maxt
+    tsgIndex = stepsPerOrbit + i - tback
+    Kt = indexInterp(K, tsgIndex, 0)
+    tstate = indexInterp(t_hist, tsgIndex, 0);
+    unext = -Kt@np.hstack([cx-tstate[0,:], cv-tstate[1,:]])
+    if norm(unext)>.5:
+        unext = unext * (.5/norm(unext))
+
+
+   ######### Propagation ###########
+    tx = t_hist[stepsPerOrbit+i+1,0,:]
+    tv = t_hist[stepsPerOrbit+i+1,1,:]
+    cx,cv = ECIprop(cx, cv, step, accel=unext)
+
+print("total simulated orbits = ", total_sim_orbits)
+fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
+ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
+rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])
+rainbow_plot(ax2, c_hist_ric[:, 0, 0], c_hist_ric[:, 0, 1])
+#rainbow_plot(ax3, range(steps), norm(c_hist_ric[:, 0, :], axis=1))
+#ax3.text(len(c_hist_ric)-75,  norm(c_hist_ric[-1, 0, :])+50, "Final Norm="+str(int(norm(c_hist_ric[-1, 0, :])*10)/10))
+rainbow_plot(ax3, umaghist)
+rainbow_plot(ax4, range(steps), coneconsthist)
+ax4.text(float(steps*.2),  min(coneconsthist)+.2*(max(coneconsthist)-min(coneconsthist)), "max const="+str(int(max(coneconsthist)*1000)/1000))
+#To be used when its actually getting close enough lol
+rainbow_plot(ax5, range(steps), speedconsthist)
+ax5.text(steps*.2,  min(speedconsthist)+.2*(max(speedconsthist)-min(speedconsthist)), "max const="+str(int(max(speedconsthist)*1000)/1000))
+rainbow_plot(ax6, tbackhist)
+plt.show()
