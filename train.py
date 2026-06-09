@@ -258,7 +258,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
                 test_loss += loss.item()
         
         test_loss /= len(test_loader)
-        printt(f"Test Loss: {np.sqrt(test_loss):.4f}", file=f)
+        printt(f"Sqrt Test Loss: {np.sqrt(test_loss):.4f}", file=f)
         printt(f"Model Saved as: {model_path}\n", file=f)
         f.flush()
 
