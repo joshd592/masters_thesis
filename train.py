@@ -241,7 +241,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
             sys.exit()
         printt("Lowest sqrt of Val Loss: ", np.sqrt(min_val_loss), file=f)
         # Test on holdout set
-        printt("\nTesting...", file=f)
+        printt("Testing...", file=f)
         #model.load_state_dict(torch.load(model_path))
         model.eval()
         
@@ -258,8 +258,8 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
                 test_loss += loss.item()
         
         test_loss /= len(test_loader)
-        printt(f"Test Loss: {test_loss:.4f}", file=f)
-        printt(f"Model Saved as: {model_path}", file=f)
+        printt(f"Test Loss: {np.sqrt(test_loss):.4f}", file=f)
+        printt(f"Model Saved as: {model_path}\n", file=f)
         f.flush()
 
 #%%
