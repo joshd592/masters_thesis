@@ -260,6 +260,7 @@ with open(time.strftime('locallogs/sweep_log_%b%d_%H%M.txt'), "w") as f:
         test_loss /= len(test_loader)
         printt(f"Test Loss: {test_loss:.4f}", file=f)
         printt(f"Model Saved as: {model_path}", file=f)
+        f.flush()
 
 #%%
 import time
