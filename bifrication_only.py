@@ -39,6 +39,7 @@ conehalfangle = 20*np.pi/180 #half angle in radians the chaser must stay within.
 g1=5 #km when constraint kicks in
 g2=20 #Paper says rad/sec, I think its (km/s)/km
 g3=0.001 #km/sec speed limit at dist 0.
+totalsimorbits = 0
 
 tx0 = np.array([a_target,0,0])
 tv0 = np.array([0,np.sqrt(mu/norm(tx0)),0])
@@ -85,10 +86,10 @@ else:
         print("Saved into localsaves/precompute.npz")
         np.savez("localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
 
-initAngle = .15 #neg in track
-amultchaser = 1.001 #SMA ratio chaser/target
+initAngle = .2 #neg in track
+amultchaser = 1.005 #SMA ratio chaser/target
 zoffset = 0
-orbits = .025
+orbits = .02
 
 cx0 = np.array([amultchaser*a_target*np.cos(-initAngle),amultchaser*a_target*np.sin(-initAngle),zoffset])
 cv0mag = np.sqrt(mu/norm(cx0))
@@ -111,6 +112,8 @@ if np.size(t_hist,axis=0) < (2*stepsPerOrbit)+steps:
     raise ValueError("Need longer precompute")
 
 def OneOrbitNoLog(i0, cx0, cv0, testTback):
+    global totalsimorbits
+    totalsimorbits += 1
     cxsim = cx0.copy()
     cvsim = cv0.copy()
     txsim = t_hist[stepsPerOrbit+i0,0,:]
@@ -191,7 +194,7 @@ for i in range(steps):
     tx = t_hist[stepsPerOrbit+i+1,0,:]
     tv = t_hist[stepsPerOrbit+i+1,1,:]
     cx,cv = ECIprop(cx, cv, step, accel=unext)
-    
+print("Total Sim Orbits Used: ", totalsimorbits)    
 fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
 ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
 rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])

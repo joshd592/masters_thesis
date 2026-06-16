@@ -43,6 +43,7 @@ conehalfangle = 20*np.pi/180 #half angle in radians the chaser must stay within.
 g1=5 #km when constraint kicks in
 g2=20 #Paper says rad/sec, I think its (km/s)/km
 g3=0.001 #km/sec speed limit at dist 0.
+totalsimorbits = 0
 
 tx0 = np.array([a_target,0,0])
 tv0 = np.array([0,np.sqrt(mu/norm(tx0)),0])
@@ -117,8 +118,8 @@ else:
         print("Saved into localsaves/precompute.npz")
         np.savez("localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
 
-initAngle = .15 #neg in track
-amultchaser = 1.001 #SMA ratio chaser/target
+initAngle = .2 #neg in track
+amultchaser = 1.005 #SMA ratio chaser/target
 zoffset = 0
 orbits = .025
 
@@ -138,7 +139,9 @@ cv=cv0.copy()
 tback=tback0
 smallStepEpsilon = 1e-10
 smallStepLimit = 3
-unsafeModelLimit = 0
+unsafeModelLimit = 1
+modelBiggerLimit = 5
+
 
 steps = int(orbits*T_target)//step
 #At time 0, tx is at t_hist[stepsperorbit]
@@ -146,6 +149,8 @@ if np.size(t_hist,axis=0) < (2*stepsPerOrbit)+steps:
     raise ValueError("Need longer precompute")
 #%%
 def OneOrbitNoLog(i0, cx0, cv0, testTback):
+    global totalsimorbits
+    totalsimorbits += 1
     cxsim = cx0.copy()
     cvsim = cv0.copy()
     txsim = t_hist[stepsPerOrbit+i0,0,:]
@@ -169,6 +174,7 @@ def OneOrbitNoLog(i0, cx0, cv0, testTback):
         txsim = t_hist[stepsPerOrbit+j+1,0,:]
         tvsim = t_hist[stepsPerOrbit+j+1,1,:]
         cxsim,cvsim = ECIprop(cxsim, cvsim, step, accel=unext)
+    #print("sim done")
     return success
 def normedForwardPass(model, localState, cx=None, cv=None, tx=None, tv=None, x_ric=None, v_ric=None, t_mag=None):
     with torch.no_grad():
@@ -187,6 +193,7 @@ def normedForwardPass(model, localState, cx=None, cv=None, tx=None, tv=None, x_r
             tback = tback_min +( tback_norm * (tback_max - tback_min))
             return tback
 def bisect(high, low=0.0001):
+    #print("starting bisect:")
     if high > 2:
         thresh = .5
     elif high < 2:
@@ -220,6 +227,7 @@ print("-"*(2+(steps//10)))
 
 smallStepCount = 0
 unsafeModelCount = 0
+modelbiggerCount = 0
 for i in range(steps):
     # if i%10==0 or i==steps-1:
     #     print("-",end="")
@@ -238,16 +246,27 @@ for i in range(steps):
 
     modelTback = normedForwardPass(model, localState, cx, cv, tx, tv, c_hist_ric[i,0,:], c_hist_ric[i,1,:], norm(tx)).item()
     modelSuccess = OneOrbitNoLog(i, cx, cv, modelTback)
-    if modelTback > tback:
-        pass
+    print(i,"/",steps,end=" ")
+    if i==0:
+        print("start with bif")
+        tback = bisect(tback) 
+    elif modelTback > tback :
+        modelbiggerCount += 1
+        if modelbiggerCount < modelBiggerLimit:
+            print("model bigger than current. reuse previous.")
+            pass
+        else:
+            print("model bigger repeatedly, bif")
+            modelbiggerCount = 0
+            tback = bisect(tback)
     elif modelSuccess:
         if np.abs(modelTback - tback) < smallStepEpsilon:
             smallStepCount += 1
             if smallStepCount < smallStepLimit:
-                print("model small step use anyway")
+                print("model small step using it anyway")
                 tback = modelTback
             else:
-                print("model small step bif")
+                print("model small step limit hit bif")
                 smallStepCount = 0
                 tback = bisect(modelTback)
         else:
@@ -256,14 +275,13 @@ for i in range(steps):
     else:
         if unsafeModelCount < unsafeModelLimit:
             unsafeModelCount += 1
-            print("model unsafe reuse")
+            print("model unsafe reuse previous")
             pass
         else:
             print("model unsafe bif")
             unsafeModelCount = 0
             tback = bisect(tback)           
-    
-    tback = tback
+            
     tsgIndex = stepsPerOrbit + i - tback
     Kt = indexInterp(K, tsgIndex, 0)
     tstate = indexInterp(t_hist, tsgIndex, 0);
@@ -275,6 +293,7 @@ for i in range(steps):
     tx = t_hist[stepsPerOrbit+i+1,0,:]
     tv = t_hist[stepsPerOrbit+i+1,1,:]
     cx,cv = ECIprop(cx, cv, step, accel=unext)
+print("Total Sim Orbits Used: ", totalsimorbits)
 #%%  
 matplotlib.use('TkAgg') 
 fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
