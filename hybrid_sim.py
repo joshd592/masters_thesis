@@ -22,6 +22,8 @@ import matplotlib.pyplot as plt
 matplotlib.use('Agg')
 from numpy.linalg import norm
 import os
+bad = r"C:\Users\joshd\AppData\Local\spyder-6\envs\spyder-runtime\Library\bin"
+os.environ['PATH'] = ';'.join(p for p in os.environ['PATH'].split(';') if p != bad)
 import torch
 
 from scipy.signal import cont2discrete
@@ -61,8 +63,6 @@ stepsPerOrbit = int(T_target//step)
 #Import LSTM
 checkpoint = torch.load(workingDir + '/localsaves/bestlocal.pth', weights_only=False)
 sequenceLen = 1; #TODO add line to check for sequence length, maybe impossible
-
-
 state_dict = checkpoint['model']
 
 # Infer architecture from weights
@@ -70,15 +70,23 @@ input_layer_key = list(state_dict.keys())[0]
 output_layer_key = list(state_dict.keys())[-2]
 dims = state_dict[input_layer_key].shape[1]
 localState = True if dims == 7 else False
-hidden_size = state_dict[output_layer_key].shape[1]
-num_layers = sum([1 for k in state_dict.keys() if k.find('.weight')>0])-1
 if sequenceLen == 1:
+    hidden_size = state_dict[input_layer_key].shape[0]
+    num_layers = sum(1 for k in state_dict if k.endswith('.weight') and 'out' not in k)
     model = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_layers)
 else:
-    model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=sequenceLen)
     inputBuffer = torch.tensor(np.zeros((sequenceLen, dims)))
+    # LSTM has weight_ih_lN and weight_hh_lN per layer; count unique layer indices
+    hidden_size = state_dict[input_layer_key].shape[0] // 4  # LSTM gates
+    num_layers = max(
+        int(k.split('_l')[-1].split('.')[0]) + 1
+        for k in state_dict if 'weight_ih_l' in k
+    )
+    model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_layers)
+
 model.load_state_dict(state_dict)
 model.eval()
+state_buffer = []
 
 #import the norms for input and output normalization
 datapath = workingDir + "/gridsweep.h5"
@@ -182,15 +190,15 @@ def OneOrbitNoLog(i0, cx0, cv0, testTback):
     #print("sim done")
     return success
 def normedForwardPass(model, localState, cx=None, cv=None, tx=None, tv=None, x_ric=None, v_ric=None, t_mag=None):
+    print("TEST")
     with torch.no_grad():
         global inputBuffer
         if localState:
             state = torch.cat([torch.tensor(x_ric), torch.tensor(v_ric), torch.tensor([t_mag])], dim=0)
             state = (state - state_min) / state_range
             state = state.float()
+        if sequenceLen == 1:
             tback_norm = model(state)
-            tback = tback_min +( tback_norm * (tback_max - tback_min))
-            return tback
         else:
             state = torch.cat([torch.tensor(cx), torch.tensor(tx), torch.tensor(cv), torch.tensor(tv)], dim=0)
             state = (state - state_min) / state_range
@@ -254,11 +262,17 @@ for i in range(steps):
     speedconsthist[i] = norm(cv-tv) - (g2*norm(cx-tx)) - g3 if norm(cx-tx) <= g1 and norm(cx-tx)>1e-3 else 0
     tbackhist[i] = tback
   ######### Control Calc ###########
+    if localState:
+        state = torch.cat([torch.tensor(c_hist_ric[i,0,:]), torch.tensor(c_hist_ric[i,1,:]), torch.tensor([norm(tx)])], dim=0)
+    else:
+        state = torch.cat([torch.tensor(cx), torch.tensor(cv), torch.tensor(tx), torch.tensor(tv)], dim=0)
+    state = ((state - state_min) / state_range).float()
+    state_buffer.append(state)
+    if len(state_buffer) > sequenceLen:
+        state_buffer.pop(0)
 
-    modelTback = normedForwardPass(model, localState, cx, cv, tx, tv, c_hist_ric[i,0,:], c_hist_ric[i,1,:], norm(tx)).item()
-    modelSuccess = OneOrbitNoLog(i, cx, cv, modelTback)
     print(i,"/",steps,end=" ")
-    if i==0:
+    if i<sequenceLen:
         print("start with bif")
         tback = bisect(tback)
     elif modelTback == -1:
@@ -287,10 +301,30 @@ for i in range(steps):
             print("model used with good step")
             tback = modelTback
     else:
-        if unsafeModelCount < unsafeModelLimit:
-            unsafeModelCount += 1
-            print("model unsafe reuse previous")
-            pass
+        modelTback = normedForwardPass(model, localState, cx, cv, tx, tv, c_hist_ric[i,0,:], c_hist_ric[i,1,:], norm(tx)).squeeze().item()
+        modelSuccess = OneOrbitNoLog(i, cx, cv, modelTback)
+        if modelTback > tback :
+            modelbiggerCount += 1
+            if modelbiggerCount < modelBiggerLimit:
+                print("model bigger than current. reuse previous.")
+                pass
+            else:
+                print("model bigger repeatedly, bif")
+                modelbiggerCount = 0
+                tback = bisect(tback)
+        elif modelSuccess:
+            if np.abs(modelTback - tback) < smallStepEpsilon:
+                smallStepCount += 1
+                if smallStepCount < smallStepLimit:
+                    print("model small step using it anyway")
+                    tback = modelTback
+                else:
+                    print("model small step limit hit bif")
+                    smallStepCount = 0
+                    tback = bisect(modelTback)
+            else:
+                print("model used with good step")
+                tback = modelTback
         else:
             print("model unsafe bif")
             unsafeModelCount = 0
