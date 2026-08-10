@@ -27,7 +27,7 @@ import torch
 from scipy.signal import cont2discrete
 from scipy.linalg import solve_discrete_are
 from globals import mu, indexInterp, ECI2RIC, ECIprop, rainbow_plot
-from globals import gravity_gradient 
+from globals import gravity_gradient, workingDir
 from train import FromStateModel, FromSequenceModel
 
 a_target = 7000 #km
@@ -56,36 +56,41 @@ n=3
 stepsPerOrbit = int(T_target//step)
 
 #Import the model for the sim
-localState = True
-checkpoint = torch.load('bestlocal.pth', weights_only=False)
+#checkpoint = torch.load(workingDir + '/localsaves/bestlocal.pth', weights_only=False)
+#sequenceLen = 1; #TODO add line to check for sequence length.
+#Import LSTM
+checkpoint = torch.load(workingDir + '/localsaves/bestlocal.pth', weights_only=False)
+sequenceLen = 1; #TODO add line to check for sequence length, maybe impossible
+
+
 state_dict = checkpoint['model']
 
 # Infer architecture from weights
-input_layer_key = next(k for k in state_dict if 'weight' in k)
+input_layer_key = list(state_dict.keys())[0]
+output_layer_key = list(state_dict.keys())[-2]
 dims = state_dict[input_layer_key].shape[1]
 localState = True if dims == 7 else False
-hidden_size = state_dict[input_layer_key].shape[0]
-num_layers = sum([1 for k in state_dict if k.endswith('.weight') and 'out' not in k])
-sequenceLen = 1; #TODO add line to check for sequence length.
+hidden_size = state_dict[output_layer_key].shape[1]
+num_layers = sum([1 for k in state_dict.keys() if k.find('.weight')>0])-1
 if sequenceLen == 1:
     model = FromStateModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_layers)
 else:
-    model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=num_layers)
+    model = FromSequenceModel(input_size=dims, hidden_size=hidden_size, num_hidden_layers=sequenceLen)
+    inputBuffer = torch.tensor(np.zeros((sequenceLen, dims)))
 model.load_state_dict(state_dict)
 model.eval()
 
 #import the norms for input and output normalization
-datapath = "gridsweep.h5"
-normFromFile = torch.load('normsfor'+datapath[:datapath.find(".")]+'.pth', weights_only=True)
+datapath = workingDir + "/gridsweep.h5"
+normFromFile = torch.load(workingDir + '/normsfor'+datapath[datapath.rfind("/")+1:datapath.find(".")]+'.pth', weights_only=True)
 tback_min = normFromFile['tback_min']
 tback_max = normFromFile['tback_max']
 state_min = normFromFile['state_min_loc'] if localState else normFromFile['state_min_abs']
 state_max = normFromFile['state_max_loc'] if localState else normFromFile['state_max_abs']
 state_range = torch.tensor([ma - mi if torch.abs(ma - mi) > 1e-3 else np.inf
                              for ma, mi in zip(state_max, state_min)])
-
-if os.path.exists("localsaves/precompute.npz"):
-    with open("localsaves/precompute.npz","rb") as f:
+if os.path.exists(workingDir + "/localsaves/precompute.npz"):
+    with open(workingDir + "/localsaves/precompute.npz","rb") as f:
         zvars = np.load(f)
         if zvars["a_target"] != a_target or zvars["step"] != step:
             raise ValueError('step size and a_target must match current script. a_target:'+
@@ -93,7 +98,7 @@ if os.path.exists("localsaves/precompute.npz"):
         K = zvars["K"]
         t_hist = zvars["t_hist"]
         print("Loaded t_hist and K from file localsaves/precompute.npz")
-else: 
+else:
     t_hist = np.zeros((n*stepsPerOrbit,2,3))
     K = np.zeros((n*stepsPerOrbit,3,6))
     B_cont = np.block([[np.zeros((3,3))],[np.eye((3))]])
@@ -178,6 +183,7 @@ def OneOrbitNoLog(i0, cx0, cv0, testTback):
     return success
 def normedForwardPass(model, localState, cx=None, cv=None, tx=None, tv=None, x_ric=None, v_ric=None, t_mag=None):
     with torch.no_grad():
+        global inputBuffer
         if localState:
             state = torch.cat([torch.tensor(x_ric), torch.tensor(v_ric), torch.tensor([t_mag])], dim=0)
             state = (state - state_min) / state_range
@@ -186,10 +192,15 @@ def normedForwardPass(model, localState, cx=None, cv=None, tx=None, tv=None, x_r
             tback = tback_min +( tback_norm * (tback_max - tback_min))
             return tback
         else:
-            state = torch.cat([torch.tensor(cx), torch.tensor(cv), torch.tensor(tx), torch.tensor(tv)], dim=1)
+            state = torch.cat([torch.tensor(cx), torch.tensor(tx), torch.tensor(cv), torch.tensor(tv)], dim=0)
             state = (state - state_min) / state_range
             state = state.float()
-            tback_norm = model(state)
+            inputBuffer[0:-1] = inputBuffer[1:].clone()
+            inputBuffer[-1] = state
+            if inputBuffer[0][0] == 0:
+              return torch.tensor(-1)
+            inputBuffer = inputBuffer.float()
+            tback_norm = model(inputBuffer)[-1]
             tback = tback_min +( tback_norm * (tback_max - tback_min))
             return tback
 def bisect(high, low=0.0001):
@@ -210,8 +221,8 @@ def bisect(high, low=0.0001):
             low = testTback
     return high
 
-        
-    
+
+
 #%%
 
 #Initialize lists for plotting
@@ -223,7 +234,7 @@ coneconsthist = np.zeros((steps,1)) # Shape (n,)
 speedconsthist = np.zeros((steps,1)) # Shape (n,)
 tbackhist = np.zeros((steps,1)) # Shape (n,)
 print("Running Simulation...")
-print("-"*(2+(steps//10)))    
+print("-"*(2+(steps//10)))
 
 smallStepCount = 0
 unsafeModelCount = 0
@@ -249,7 +260,10 @@ for i in range(steps):
     print(i,"/",steps,end=" ")
     if i==0:
         print("start with bif")
-        tback = bisect(tback) 
+        tback = bisect(tback)
+    elif modelTback == -1:
+        print("Cannot use LSTM yet. bif")
+        tback = bisect(tback)
     elif modelTback > tback :
         modelbiggerCount += 1
         if modelbiggerCount < modelBiggerLimit:
@@ -280,8 +294,8 @@ for i in range(steps):
         else:
             print("model unsafe bif")
             unsafeModelCount = 0
-            tback = bisect(tback)           
-            
+            tback = bisect(tback)
+
     tsgIndex = stepsPerOrbit + i - tback
     Kt = indexInterp(K, tsgIndex, 0)
     tstate = indexInterp(t_hist, tsgIndex, 0);
@@ -293,16 +307,22 @@ for i in range(steps):
     tx = t_hist[stepsPerOrbit+i+1,0,:]
     tv = t_hist[stepsPerOrbit+i+1,1,:]
     cx,cv = ECIprop(cx, cv, step, accel=unext)
+
+#%% Output
 print("Total Sim Orbits Used: ", totalsimorbits)
-#%%  
-matplotlib.use('TkAgg') 
+print("Min Dist: ", min(norm(c_hist_ric[:,0,:],axis=1)))
+print("Final Dist: ", norm(c_hist_ric[:,0,:],axis=1)[-1])
+print("Max coneconst: ", max(coneconsthist))
+print("Max spedconst: ", max(speedconsthist))
+
+%matplotlib inline
 fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
 ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
 rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])
 rainbow_plot(ax2, c_hist_ric[:, 0, 0], c_hist_ric[:, 0, 1])
 #rainbow_plot(ax3, range(steps), norm(c_hist_ric[:, 0, :], axis=1))
 #ax3.text(len(c_hist_ric)-75,  norm(c_hist_ric[-1, 0, :])+50, "Final Norm="+str(int(norm(c_hist_ric[-1, 0, :])*10)/10))
-rainbow_plot(ax3, umaghist)
+rainbow_plot(ax3, norm(c_hist_ric[:,0,:],axis=1))
 rainbow_plot(ax4, range(steps), coneconsthist)
 #ax4.text(float(steps*.2),  min(coneconsthist)+.2*(max(coneconsthist)-min(coneconsthist)), "max const="+str(float(np.max(coneconsthist)*1000)/1000))
 #To be used when its actually getting close enough lol
@@ -310,3 +330,9 @@ rainbow_plot(ax5, range(steps), speedconsthist)
 #ax5.text(steps*.2,  min(speedconsthist)+.2*(max(speedconsthist)-min(speedconsthist)), "max const="+str(float(np.max(speedconsthist)*1000)/1000))
 rainbow_plot(ax6, tbackhist)
 plt.show()
+
+if max(coneconsthist) > 0 or max(speedconsthist) > 0:
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")

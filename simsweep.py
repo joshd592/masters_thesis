@@ -29,7 +29,7 @@ import os
 from scipy.signal import cont2discrete
 from scipy.linalg import solve_discrete_are
 from globals import mu, indexInterp, ECI2RIC, ECIprop
-from globals import gravity_gradient 
+from globals import gravity_gradient, workingDir
 import time
 
 a_target = 7000 #km
@@ -57,8 +57,8 @@ n=3
 stepsPerOrbit = int(T_target//step)
 
 
-if os.path.exists("localsaves/precompute.npz"):
-    with open("localsaves/precompute.npz","rb") as f:
+if os.path.exists(workingDir + "/localsaves/precompute.npz"):
+    with open(workingDir + "/localsaves/precompute.npz","rb") as f:
         zvars = np.load(f)
         if zvars["a_target"] != a_target or zvars["step"] != step:
             raise ValueError('step size and a_target must match current script. a_target:'+
@@ -88,7 +88,7 @@ else:
         tx,tv = ECIprop(tx, tv, step)
     print("-", end="")
     if "thesis" in os.getcwd() or "Thesis" in os.getcwd():
-        np.savez("localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
+        np.savez(workingDir + "/localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
 
 def OneOrbitNoLog(i0, cx0, cv0, testTback):
     cxsim = cx0.copy()

@@ -25,6 +25,7 @@ from scipy.signal import cont2discrete
 from scipy.linalg import solve_discrete_are
 from globals import mu, indexInterp, ECI2RIC, ECIprop, rainbow_plot
 from globals import gravity_gradient 
+from globals import workingDir
 
 a_target = 7000 #km
 n=np.sqrt(mu/a_target**3)
@@ -52,8 +53,8 @@ n=3
 stepsPerOrbit = int(T_target//step)
 
 
-if os.path.exists("localsaves/precompute.npz"):
-    with open("localsaves/precompute.npz","rb") as f:
+if os.path.exists(workingDir + "/localsaves/precompute.npz"):
+    with open(workingDir + "/localsaves/precompute.npz","rb") as f:
         zvars = np.load(f)
         if zvars["a_target"] != a_target or zvars["step"] != step:
             raise ValueError('step size and a_target must match current script. a_target:'+
@@ -61,7 +62,7 @@ if os.path.exists("localsaves/precompute.npz"):
         K = zvars["K"]
         t_hist = zvars["t_hist"]
         print("Loaded t_hist and K from file localsaves/precompute.npz")
-else: 
+else:
     t_hist = np.zeros((n*stepsPerOrbit,2,3))
     K = np.zeros((n*stepsPerOrbit,3,6))
     B_cont = np.block([[np.zeros((3,3))],[np.eye((3))]])
@@ -82,14 +83,13 @@ else:
         K[i,:] = Kt
         tx,tv = ECIprop(tx, tv, step)
     print("-", end="")
-    if "thesis" in os.getcwd() or "Thesis" in os.getcwd():
-        print("Saved into localsaves/precompute.npz")
-        np.savez("localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
+    print("Saved into localsaves/precompute.npz")
+    np.savez(workingDir + "/localsaves/precompute.npz", K=K, t_hist=t_hist, a_target=a_target, step=step)
 
 initAngle = .2 #neg in track
 amultchaser = 1.005 #SMA ratio chaser/target
 zoffset = 0
-orbits = .02
+orbits = .05
 
 cx0 = np.array([amultchaser*a_target*np.cos(-initAngle),amultchaser*a_target*np.sin(-initAngle),zoffset])
 cv0mag = np.sqrt(mu/norm(cx0))
@@ -194,14 +194,20 @@ for i in range(steps):
     tx = t_hist[stepsPerOrbit+i+1,0,:]
     tv = t_hist[stepsPerOrbit+i+1,1,:]
     cx,cv = ECIprop(cx, cv, step, accel=unext)
-print("Total Sim Orbits Used: ", totalsimorbits)    
+print("Total Sim Orbits Used: ", totalsimorbits)
+print("Min Dist: ", min(norm(c_hist_ric[:,0,:],axis=1)))
+print("Final Dist: ", norm(c_hist_ric[:,0,:],axis=1)[-1])
+print("Max coneconst: ", max(coneconsthist))
+print("Max spedconst: ", max(speedconsthist))
+
+%matplotlib inline
 fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8,4))
 ax1.plot(t_hist[:, 0, 0], t_hist[:, 0, 1])
 rainbow_plot(ax1, c_hist[:, 0, 0], c_hist[:, 0, 1])
 rainbow_plot(ax2, c_hist_ric[:, 0, 0], c_hist_ric[:, 0, 1])
 #rainbow_plot(ax3, range(steps), norm(c_hist_ric[:, 0, :], axis=1))
 #ax3.text(len(c_hist_ric)-75,  norm(c_hist_ric[-1, 0, :])+50, "Final Norm="+str(int(norm(c_hist_ric[-1, 0, :])*10)/10))
-rainbow_plot(ax3, umaghist)
+rainbow_plot(ax3, norm(c_hist_ric[:,0,:],axis=1))
 rainbow_plot(ax4, range(steps), coneconsthist)
 #ax4.text(float(steps*.2),  min(coneconsthist)+.2*(max(coneconsthist)-min(coneconsthist)), "max const="+str(float(np.max(coneconsthist)*1000)/1000))
 #To be used when its actually getting close enough lol
@@ -209,3 +215,9 @@ rainbow_plot(ax5, range(steps), speedconsthist)
 #ax5.text(steps*.2,  min(speedconsthist)+.2*(max(speedconsthist)-min(speedconsthist)), "max const="+str(float(np.max(speedconsthist)*1000)/1000))
 rainbow_plot(ax6, tbackhist)
 plt.show()
+
+if max(coneconsthist) > 0 or max(speedconsthist) > 0:
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")
+    print("\033[91mCONSTS BROKEN\n\033[0m")
